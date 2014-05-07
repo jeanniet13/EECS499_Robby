@@ -22,16 +22,7 @@
     ;;; copy bitmap down
     ;;; and then update the invalid region (inserted stuff)
     ;;; invalid region is the inserted region
-    ; for delete - invalid region should only be one line? except when things are pending
-    ;; one/multiple characters in one line
-    ;;; fix invalid line
-    ;; one line
-    ;;; copy stuff up
-    ;; multiple lines
-    ;;; copy stuff up
-    ;;; check first line of deleted region
-    ;;; check last line of deleted region in case of overlap
-
+    
     ; eventually just updates invalid region
     ; either update the bitmap if the work is sufficiently small
     ; or just update start/end
@@ -42,25 +33,73 @@
       (define ps (position-paragraph start))
       (define pe (position-paragraph (+ start len)))
       (cond 
-        #;[(equal? ps pe)
+        ; one line
+        [(equal? ps pe)
          (set! invalid-start (min ps invalid-start))
          (set! invalid-end (max pe invalid-end))]
+        ; insert at end of bitmap, no space left (i.e. no line shifting)
+        [(equal? pe (send bmp get-height))
+         (set! invalid-start (min ps invalid-start))
+         (set! invalid-end (max pe invalid-end))
+         (when (>= (last-paragraph) (send bmp get-height))
+           (begin
+             (define h (send bmp get-height))
+             (define w (send bmp get-width))
+             (define temp (make-bitmap w (* 2 h)))
+             (define b (make-bytes (* 4 w h)))
+             (send bmp get-argb-pixels 0 0 w h b)
+             (send temp set-argb-pixels 0 0 w h b)
+             (set! bmp temp)))]
+        ; insert at end of text
+        [(equal? pe (last-paragraph))
+         (set! invalid-start (min ps invalid-start))
+         (set! invalid-end (max pe invalid-end))]
+        ; insert in the middle, line shifting
         [else
          (define invalid-region-size (+ (- pe ps) 1))
          (define b (make-bytes (* 4 100 (- (last-paragraph) invalid-region-size))))
          (send bmp get-argb-pixels 0 start 100 invalid-region-size b)
-         (if (< (last-paragraph) 100)
+         (if (>= (last-paragraph) (send bmp get-height))
              0 ; double size of bitmap
-             (send bmp set-argb-pixels 0 (+ 1 pe) 100 invalid-region-size b))         
+             (send bmp set-argb-pixels 0 (+ 1 pe) 100 invalid-region-size b))
+         (set! invalid-start (min ps invalid-start))
+         (set! invalid-end (max pe invalid-end))
          0])
-      (set! invalid-start (min ps invalid-start))
-      (set! invalid-end (max pe invalid-end))
+      
+      #;(printf "istart:~a iend:~a\n" invalid-start invalid-end))
     
-    ; only works for deleting one region
+    
     ; how to handle multiple non-consective regions?
+    ; for delete - invalid region should only be one line? except when things are pending
+    ;; one/multiple characters in one line
+    ;;; fix invalid line
+    ;; one line
+    ;;; copy stuff up
+    ;; multiple lines
+    ;;; copy stuff up
+    ;;; check first line of deleted region
+    ;;; check last line of deleted region in case of overlap
     (define/augment (on-delete start len)
       (inner (void) on-delete start len)
       ; check size of invalid region
+      (define ps (position-paragraph start))
+      (define pe (position-paragraph (+ start len)))
+      (cond
+        [(equal? ps pe) 
+         (set! invalid-start (min ps invalid-start))
+         (set! invalid-end (max pe invalid-end))]
+        [(equal? 1 (- pe ps))
+         ; copy stuff up
+         (define invalid-region-size (+ 1 (- (last-paragraph) pe)))
+         (define b (make-bytes (* 4 100 invalid-region-size)))
+         (send bmp get-argb-pixels 0 pe 100 invalid-region-size b)
+         (send bmp set-argb-pixels 0 ps 100 invalid-region-size b)
+         (set! invalid-start (min ps invalid-start))
+         ; set to last-paragraph b/c the lines that we copied aren't cleared
+         (set! invalid-end (last-paragraph))]
+        [else 0])
+      
+      #;(printf "istart:~a iend:~a\n" invalid-start invalid-end)
       ; if start and end are in the same line
       ; update invalid region to include line
       ; if they are on different lines, 
@@ -94,6 +133,10 @@
     
     (define/public (get-bitmap)
       bmp)       
+    (define/private (update-invalid-start nstart)
+      (set! invalid-start nstart))
+    (define/private (update-invalid-end nend)
+      (set! invalid-end nend))
     
     ; do-a-little-work : void
     ; three iterations of (update-bitmap)
@@ -108,39 +151,35 @@
       (cond 
         [(up-to-date?) (void)]
         [else (define bdc (new bitmap-dc% [bitmap bmp]))
-              (printf "istart:~a iend:~a\n" invalid-start invalid-end)
-              (printf "pnum:~a pstart:~a pend:~a\n" 
-                      (position-paragraph invalid-start) 
-                      (paragraph-start-position (position-paragraph invalid-start)) 
-                      (paragraph-end-position (position-paragraph invalid-start)))
-              (let ([y (position-paragraph invalid-start)])
-                (update-one-line y bdc)
-                (update-invalid-start (+ 1 (paragraph-end-position y))))
+              ;(printf "istart:~a iend:~a\n" invalid-start invalid-end)
+              #;(printf "pnum:~a pstart:~a pend:~a\n" 
+                        invalid-start 
+                        (paragraph-start-position invalid-start) 
+                        (paragraph-end-position invalid-start))
+              (let ([y invalid-start])
+                (cond 
+                  [(equal? invalid-start invalid-end)
+                   (update-one-line y bdc)
+                   (update-invalid-start #f)
+                   (update-invalid-end #f)]
+                  [else 
+                   (update-one-line y bdc)
+                   (update-invalid-start (+ 1 y))]))
               (send bdc set-bitmap #f)]))
     
     (define/private (update-one-line y bdc)
-      ; bug: not appending to end of a line
       (for ([i (in-range (paragraph-start-position y) 
                          (+ 1 (paragraph-end-position y)))])
-        (printf "i:~a\n" i)
         (define x (- i (paragraph-start-position y)))
         (let ([ch (get-character i)])
           (cond 
-            [(char-whitespace? ch) (if (char=? #\newline ch)
-                                       (send bdc 
-                                             set-pixel 
-                                             x 
-                                             y 
-                                             (make-object color% "red"))
-                                       (send bdc 
-                                             set-pixel 
-                                             x 
-                                             y 
-                                             (make-object color% "aquamarine")))]
+            [(char-whitespace? ch) 
+             (send bdc set-pixel x y (make-object color% "red"))]
             [else (send bdc set-pixel x y (make-object color% "black"))]))))
     
     (define/public (up-to-date?)
-      (>= invalid-start invalid-end))
+      ;(>= invalid-start invalid-end)
+      (and (not invalid-start) (not invalid-end)))
     ))
 
 (define (color->bytes colorobj numpixels)
@@ -170,8 +209,8 @@
   (fn nt)
   (let loop ()
     (send nt do-a-little-work)
-    (print (send nt get-bitmap))
-    (newline)
+    ;(print (send nt get-bitmap))
+    ;(newline)
     (unless (send nt up-to-date?) (loop)))
   (print (send nt get-bitmap))
   (print bmp)
@@ -266,12 +305,26 @@
   (send txt insert "\n")
   (send txt insert "\n")
   (send txt insert "\n"))
- 
+
+(define (delete-test1 txt)
+  (send txt insert "\n\n\n\n\n\n")
+  (send txt insert "hellohellohellohellohello")
+  (send txt insert "\n\n\n\n\n\n")
+  (send txt delete 0 6)
+  (send txt delete 0 12))
+
+(define (insert-test4 txt)
+  (for ([i (in-range 101)])
+    (send txt insert "a")
+    (send txt insert "\n")))
+
 ;(test-txtbmp insert-test3 (make-bitmap 100 100))
 ;(test-txtbmp insert-test (make-bitmap 100 100))
 ;(test-txtbmp insert-newlines (make-bitmap 100 100))
 ;(test-txtbmp insert-test2 (make-bitmap 100 100))
-  
+;(test-txtbmp insert-test1 (make-bitmap 100 100))
+;(test-txtbmp delete-test1 (make-bitmap 100 100))
+(test-txtbmp insert-test4 (make-bitmap 100 100))
 
 #| 
 (define f (new frame% [label ""] 

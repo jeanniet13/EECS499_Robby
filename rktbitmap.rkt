@@ -7,11 +7,10 @@
 
 (define state%
   (class text%
-    (define invalid-start 0)
-    (define invalid-end 0)
-    (define bmp-width 100)
-    (define bmp-height 100)
-    (define bmp (make-bitmap bmp-width bmp-height))
+    (define invalid-start #f)
+    (define invalid-end #f)
+    (define primary-bmp (make-bitmap 100 100))
+    (define secondary-bmp (make-bitmap 100 100))
     (super-new)
     
     ; situations to consider
@@ -34,36 +33,38 @@
       (define pe (position-paragraph (+ start len)))
       (cond 
         ; one line
-        [(equal? ps pe)
-         (set! invalid-start (min ps invalid-start))
-         (set! invalid-end (max pe invalid-end))]
+        [(= ps pe)
+         (update-invalid-start (min ps invalid-start))
+         (update-invalid-end (max pe invalid-end))]
         ; insert at end of bitmap, no space left (i.e. no line shifting)
-        [(equal? pe (send bmp get-height))
-         (set! invalid-start (min ps invalid-start))
-         (set! invalid-end (max pe invalid-end))
-         (when (>= (last-paragraph) (send bmp get-height))
-           (begin
-             (define h (send bmp get-height))
-             (define w (send bmp get-width))
-             (define temp (make-bitmap w (* 2 h)))
-             (define b (make-bytes (* 4 w h)))
-             (send bmp get-argb-pixels 0 0 w h b)
-             (send temp set-argb-pixels 0 0 w h b)
-             (set! bmp temp)))]
-        ; insert at end of text
-        [(equal? pe (last-paragraph))
-         (set! invalid-start (min ps invalid-start))
-         (set! invalid-end (max pe invalid-end))]
+        ; remove this section because this case doesn't test properly
+        ; only two cases, the one above and the one below
+        [(= pe (send primary-bmp get-height))
+         (update-invalid-start (min ps invalid-start))
+         (update-invalid-end (max pe invalid-end))
+         (when (>= (last-paragraph) (send primary-bmp get-height))           
+           (define h (send primary-bmp get-height))
+           (define w (send primary-bmp get-width))
+           (define temp (make-bitmap w (* 2 h)))
+           (set! secondary-bmp temp)
+           ;(define b (make-bytes (* 4 w h)))
+           ;(send primary-bmp get-argb-pixels 0 0 w h b)
+           ;(send temp set-argb-pixels 0 0 w h b)
+           (send secondary-bmp draw-bitmap-section 
+                 primary-bmp 0 0 0 0 w h)
+           ;(set! primary-bmp temp)
+           (set! primary-bmp secondary-bmp)
+           (set! secondary-bmp (make-bitmap w (* 2 h))))]
         ; insert in the middle, line shifting
         [else
          (define invalid-region-size (+ (- pe ps) 1))
          (define b (make-bytes (* 4 100 (- (last-paragraph) invalid-region-size))))
-         (send bmp get-argb-pixels 0 start 100 invalid-region-size b)
-         (if (>= (last-paragraph) (send bmp get-height))
+         (send primary-bmp get-argb-pixels 0 start 100 invalid-region-size b)
+         (if (>= (last-paragraph) (send primary-bmp get-height))
              0 ; double size of bitmap
-             (send bmp set-argb-pixels 0 (+ 1 pe) 100 invalid-region-size b))
-         (set! invalid-start (min ps invalid-start))
-         (set! invalid-end (max pe invalid-end))
+             (send primary-bmp set-argb-pixels 0 (+ 1 pe) 100 invalid-region-size b))
+         (update-invalid-start (min ps invalid-start))
+         (update-invalid-end (max pe invalid-end))
          0])
       
       #;(printf "istart:~a iend:~a\n" invalid-start invalid-end))
@@ -86,17 +87,17 @@
       (define pe (position-paragraph (+ start len)))
       (cond
         [(equal? ps pe) 
-         (set! invalid-start (min ps invalid-start))
-         (set! invalid-end (max pe invalid-end))]
+         (update-invalid-start (min ps invalid-start))
+         (update-invalid-end (max pe invalid-end))]
         [(equal? 1 (- pe ps))
          ; copy stuff up
          (define invalid-region-size (+ 1 (- (last-paragraph) pe)))
-         (define b (make-bytes (* 4 100 invalid-region-size)))
-         (send bmp get-argb-pixels 0 pe 100 invalid-region-size b)
-         (send bmp set-argb-pixels 0 ps 100 invalid-region-size b)
-         (set! invalid-start (min ps invalid-start))
+         ;(define b (make-bytes (* 4 100 invalid-region-size)))
+         ;(send primary-bmp get-argb-pixels 0 pe 100 invalid-region-size b)
+         ;(send primary-bmp set-argb-pixels 0 ps 100 invalid-region-size b)
+         ;(update-invalid-start (min ps invalid-start))
          ; set to last-paragraph b/c the lines that we copied aren't cleared
-         (set! invalid-end (last-paragraph))]
+         (update-invalid-end (last-paragraph))]
         [else 0])
       
       #;(printf "istart:~a iend:~a\n" invalid-start invalid-end)
@@ -105,8 +106,6 @@
       ; if they are on different lines, 
       ; copy the bitmap up
       ; and update invalid region
-      #;(update-dstart start)
-      #;(update-dend (+ start len)))
     
     ; how to get colors of words
     (define/augment (after-change-style start len) 
@@ -123,7 +122,7 @@
              get-text)
     
     (define/private (update-bitmap)
-      (define bdc (new bitmap-dc% [bitmap bmp]))
+      (define bdc (new bitmap-dc% [bitmap primary-bmp]))
       (send bdc erase)
       ;; iterate over the characters in t
       ;; update the bitmap based on them      
@@ -132,11 +131,15 @@
       (send bdc set-bitmap #f))
     
     (define/public (get-bitmap)
-      bmp)       
+      primary-bmp)       
+    (define/private (swap-bitmaps)
+      (define temp primary-bmp)
+      (set! primary-bmp secondary-bmp)
+      (set! secondary-bmp temp))
     (define/private (update-invalid-start nstart)
-      (set! invalid-start nstart))
+      (update-invalid-start nstart))
     (define/private (update-invalid-end nend)
-      (set! invalid-end nend))
+      (update-invalid-end nend))
     
     ; do-a-little-work : void
     ; three iterations of (update-bitmap)
@@ -150,7 +153,7 @@
     (define/public (do-a-little-work)
       (cond 
         [(up-to-date?) (void)]
-        [else (define bdc (new bitmap-dc% [bitmap bmp]))
+        [else (define bdc (new bitmap-dc% [bitmap primary-bmp]))
               ;(printf "istart:~a iend:~a\n" invalid-start invalid-end)
               #;(printf "pnum:~a pstart:~a pend:~a\n" 
                         invalid-start 
@@ -204,7 +207,7 @@
 ; create a text, call the function, do-a-little-work until up-to-date?, compare bitmaps
 ; test-txtbmp : (-> text void) bitmap -> bool
 ; random testing
-(define (test-txtbmp fn bmp)
+(define (test-txtbmp fn fn2 bmp)
   (define nt (new state%))
   (fn nt)
   (let loop ()
@@ -212,6 +215,11 @@
     ;(print (send nt get-bitmap))
     ;(newline)
     (unless (send nt up-to-date?) (loop)))
+  (when fn2
+    (fn2 nt)
+    (let loop()
+      (send nt do-a-little-work)
+      (unless (send nt up-to-date?) (loop))))
   (print (send nt get-bitmap))
   (print bmp)
   (newline)

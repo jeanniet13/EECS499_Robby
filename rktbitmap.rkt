@@ -3,7 +3,8 @@
 (require racket/gui/base
          racket/class
          racket/list
-         racket/match)
+         racket/match
+         framework)
 
 (define state%
   (class text%
@@ -63,14 +64,7 @@
             (send bdc draw-bitmap-section
                   primary-bmp 0 pe 0 ps w invalid-region-size)
             (swap-bitmaps)])
-         (union-invalid ps pe)])
-      
-      #|
-      (printf "insert istart:~a iend:~a\n" invalid-start invalid-end)
-      (print primary-bmp)
-      (newline)
-|#)
-    
+         (union-invalid ps pe)]))    
     
     ; how to handle multiple non-consective regions?
     ; for delete - invalid region should only be one line? except when things are pending
@@ -102,13 +96,7 @@
          (send bdc set-brush "white" 'solid)
          (send bdc draw-rectangle 0 (- (last-paragraph) 1) w (- h ps (- invalid-region-size pe)))
          (swap-bitmaps)
-         (union-invalid ps ps)])
-      
-      #|
-      (printf "delete istart:~a iend:~a\n" invalid-start invalid-end)
-      (print primary-bmp)
-      (newline)
-|#)
+         (union-invalid ps ps)]))
 
       ; if start and end are in the same line
       ; update invalid region to include line
@@ -127,12 +115,13 @@
              get-character
              insert
              delete
-             get-text)
+             get-text
+             find-snip)
     
     (define/private (update-bitmap)
       (define bdc (new bitmap-dc% [bitmap primary-bmp]))
       (send bdc erase)
-      ;; iterate over the characters in t
+      ;; iterate over the lines in t
       ;; update the bitmap based on them      
       (for ([y (+ 1 (last-paragraph))])
         (update-one-line y bdc))
@@ -183,11 +172,16 @@
               (update-invalid-start (+ 1 y))]))
          (send bdc set-bitmap #f)]))
     
-    ; one problem, if the paragraph is shorter after a delete
-    ; then there will be remnants from the previous paragraph 
-    ; after the last position in the paragraph
-    ; that don't get redrawn
     (define/private (update-one-line y bdc)
+      (define (get-color p)
+        (define snip (find-snip p 'after-or-none))
+        (define style (send snip get-style))
+        (send style get-foreground))
+      (define (color->rgb c)
+        (list (send c red)
+              (send c green)
+              (send c blue)))
+      
       (send bdc set-pen "blue" 1 'transparent)
       (send bdc set-brush "white" 'solid)
       (define w (send secondary-bmp get-width))
@@ -198,8 +192,10 @@
         (let ([ch (get-character i)])
           (cond 
             [(char-whitespace? ch) 
-             (send bdc set-pixel x y (make-object color% "red"))]
-            [else (send bdc set-pixel x y (make-object color% "black"))]))))
+             (send bdc set-pixel x y (make-object color% "white"))]
+            [else 
+             (printf "~a ~a\n" (get-character i) (color->rgb (get-color i)))
+             (send bdc set-pixel x y (make-object color% (get-color i)))]))))
     
     (define/public (up-to-date?)
       (and (not invalid-start) (not invalid-end)))
@@ -226,6 +222,8 @@
     (let loop()
       (send nt do-a-little-work)
       (unless (send nt up-to-date?) (loop))))
+  (print (send nt get-bitmap))
+  (newline)
   (define actual (bitmap->strings (send nt get-bitmap)))
   (unless (equal? actual ls)
     (eprintf "YOU FAILED test on line ~a\n ~s\n ~s\n" line actual ls)))
@@ -238,9 +236,12 @@
      string
     (for/list ([j (in-range (send bmp get-width))])
       (send bdc get-pixel j i color)
-      (if (= 0 (send color red))
-          #\x
-          #\space)))))
+      (if (and (= 255 (send color red))
+               (= 255 (send color green))
+               (= 255 (send color blue)))
+          #\space
+          #\x)))))
+      
 
 ; turn into bytes and use equal?
 ; empty bytes will be 4x width and height
@@ -252,56 +253,8 @@
   (send bmp2 get-argb-pixels 0 0 100 100 c1)
   (equal? b1 c1))
 
-(define (insert-test0 txt)
-  (send txt insert "hello")
-  (send txt delete 0 5)
-  (send txt insert "hello"))
-
-(define (insert-test3 txt)
-  (send txt insert "hello")
-  (send txt insert "hello")
-  (send txt delete 3 8))
-
-(define (insert-test1 txt)
-  (send txt insert "hello" 0)
-  (send txt insert "hello" 99))
-
-(define (insert-newlines txt)
-  (send txt insert "\n")
-  (send txt insert "\n")
-  (send txt insert "\n")
-  (send txt insert "\n")
-  (send txt insert "\n")
-  (send txt insert "\n")
-  (send txt insert "\n")
-  (send txt insert "\n"))
-
-(define (delete-test1 txt)
-  (send txt insert "\n\n\n\n\n\n")
-  (send txt insert "hellohellohellohellohello")
-  (send txt insert "\n\n\n\n\n\n")
-  (send txt delete 0 6)
-  (send txt delete 0 12))
-
-(define (insert-test4 txt)
-  (for ([i (in-range 101)])
-    (send txt insert "aaaaaaaaaaaaaaaaaaaa")
-    (send txt insert "\n")))
-
-(define (delete-test4 txt)
-  (send txt delete 10 40)
-  (send txt delete 50 75)
-  (send txt delete 100 136)
-  (send txt delete 308 367)
-  (send txt delete 320 336)
-  (send txt delete 400 578))
-
-(define (delete-test2 txt)
-  (send txt insert "hellohellohello\n")
-  (send txt insert "hellohellohello\n")
-  (send txt insert "hellohellohello\n")
-  (send txt delete 5 10))
-
+; passed
+#|
 (define (mini1 txt)
   (send txt insert "hello\n")
   (send txt insert "hello\n"))
@@ -352,6 +305,7 @@
 (define (mini15 txt)
   (send txt insert "\n"))
 
+
 (test-txtbmp (list mini1) '("xxxxx     "
                             "xxxxx     "
                             "          "
@@ -382,29 +336,186 @@
                                   "          "
                                   "          "
                                   "          "))
-(test-txtbmp (list mini4 mini3) (make-bitmap 10 10))
-(test-txtbmp (list mini5 mini5d) (make-bitmap 10 10))
-(test-txtbmp (list mini6 mini6d) (make-bitmap 10 10))
-(test-txtbmp (list mini7) (make-bitmap 10 10))
-(test-txtbmp (list mini7 mini8) (make-bitmap 10 10))
-(test-txtbmp (list mini7 mini9 mini8) (make-bitmap 10 10))
-(test-txtbmp (list mini7 mini10) (make-bitmap 10 10))
-(test-txtbmp (list mini11 mini12) (make-bitmap 10 10))
-(test-txtbmp (list mini14 mini13) (make-bitmap 10 10))
-(test-txtbmp (list mini14) (make-bitmap 10 10))
-(test-txtbmp (list mini15) (make-bitmap 10 10))
-;(test-txtbmp insert-test3 (make-bitmap 100 100))
-;(test-txtbmp insert-test (make-bitmap 100 100))
-;(test-txtbmp insert-newlines (make-bitmap 100 100))
-;(test-txtbmp insert-test2 (make-bitmap 100 100))
-;(test-txtbmp insert-test1 (make-bitmap 100 100))
-;(test-txtbmp delete-test1 (make-bitmap 100 100))
-;(test-txtbmp insert-test4 (list delete-test4 insert-newlines) (make-bitmap 100 100))
-;(test-txtbmp delete-test2 empty (make-bitmap 100 100))
-;(test-txtbmp insert-test4 empty (make-bitmap 100 100))
-;(test-txtbmp insert-test4 (list delete-test4) (make-bitmap 100 100))
+(test-txtbmp (list mini4 mini3) `("x     x   "
+                                  "          "
+                                  "          "
+                                  "          "
+                                  "          "
+                                  "          "
+                                  "          "
+                                  "          "
+                                  "          "
+                                  "          "))
+(test-txtbmp (list mini5 mini5d) `("x         "
+                                   "          " 
+                                   "          " 
+                                   "          "
+                                   "          " 
+                                   "          " 
+                                   "          " 
+                                   "          " 
+                                   "          "
+                                   "          "))
+(test-txtbmp (list mini6 mini6d) `("          " 
+                                   "          "                                                 
+                                   "          " 
+                                   "          " 
+                                   "          " 
+                                   "          "
+                                   "          " 
+                                   "          " 
+                                   "          " 
+                                   "          "))
+(test-txtbmp (list mini7) `("xxxxx     " 
+                            "xxxxx     " 
+                            "xxxxx     " 
+                            "xxxxx     " 
+                            "xxxxx     " 
+                            "xxxxx     " 
+                            "xxxxx     " 
+                            "xxxxx     " 
+                            "xxxxx     " 
+                            "xxxxx     " 
+                            "          " 
+                            "          " 
+                            "          " 
+                            "          " 
+                            "          " 
+                            "          " 
+                            "          "
+                            "          " 
+                            "          " 
+                            "          "))
+(test-txtbmp (list mini7 mini8) `("xxxxx     "                                   
+                                  "xx        "
+                                  "xxxxx     " 
+                                  "xxxxx     " 
+                                  "xxxxx     " 
+                                  "xxxxx     " 
+                                  "xxxxx     " 
+                                  "xxxxx     " 
+                                  "xxxxx     " 
+                                  "xxxxx     " 
+                                  "xxxxx     "  
+                                  "          " 
+                                  "          " 
+                                  "          " 
+                                  "          " 
+                                  "          " 
+                                  "          "
+                                  "          " 
+                                  "          " 
+                                  "          "))
+(test-txtbmp (list mini7 mini9 mini8) `("xxxxx     "
+                                        "xx        "
+                                        "xxxxx     " 
+                                        " xxxxx    "
+                                        "xxxxx     "
+                                        "xxxxx     "
+                                        "xxxxx     "
+                                        "xxxxx     " 
+                                        "xxxxx     "
+                                        "xxxxx     "
+                                        "xxxxx     "
+                                        "          "
+                                        "          " 
+                                        "          " 
+                                        "          "
+                                        "          "
+                                        "          "
+                                        "          "
+                                        "          "
+                                        "          "))
+(test-txtbmp (list mini7 mini10) `("xxxxx     " 
+                                   "xxxxx     "
+                                   "xxxxx     "
+                                   "xxxxx     "
+                                   "xxxxx     " 
+                                   "xxxxx     "
+                                   "xxxxx     "
+                                   "xxxxx     "
+                                   "xxxxx     "
+                                   "          "
+                                   "          "
+                                   "          " 
+                                   "          " 
+                                   "          " 
+                                   "          " 
+                                   "          " 
+                                   "          "
+                                   "          " 
+                                   "          "
+                                   "          "))
+(test-txtbmp (list mini11 mini12) `("xxx       "
+                                    "xxxxxx    " 
+                                    "          " 
+                                    "          " 
+                                    "          " 
+                                    "          "
+                                    "          " 
+                                    "          " 
+                                    "          " 
+                                    "          "))
+(test-txtbmp (list mini14 mini13) `("xxxx      "
+                                    "xxxx      " 
+                                    "          "
+                                    "          "
+                                    "          "
+                                    "          " 
+                                    "          " 
+                                    "          "
+                                    "          " 
+                                    "          "))
+(test-txtbmp (list mini14) `("xxxx      "
+                             "          "
+                             "xxxx      "
+                             "          "
+                             "          "
+                             "          "
+                             "          "
+                             "          "
+                             "          "
+                             "          "))
+(test-txtbmp (list mini15) `("          "
+                             "          "
+                             "          "
+                             "          "
+                             "          "
+                             "          " 
+                             "          " 
+                             "          " 
+                             "          " 
+                             "          "))
+|#
 
-#| 
+(define (mini16 txt)
+  (send txt insert ";hello"))
+(define (mini17 txt)
+  (send txt insert "\"hello\""))
+(define (mini18 txt)
+  (send txt insert "#|hello"))
+(test-txtbmp (list mini16) `("xxxxxx    "
+                             "          "
+                             "          "
+                             "          "
+                             "          "
+                             "          "
+                             "          "
+                             "          "
+                             "          "
+                             "          "))
+(test-txtbmp (list mini17) `("xxxxxxx   "
+                             "          "
+                             "          "
+                             "          "
+                             "          "
+                             "          "
+                             "          "
+                             "          "
+                             "          "
+                             "          "))
+
+#|
 (define f (new frame% [label ""] 
                [width 200]
                [height 200]))

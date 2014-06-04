@@ -7,10 +7,10 @@
 
 (define state%
   (class text%
-    (define invalid-start +inf.0)
-    (define invalid-end -inf.0)
-    (define primary-bmp (make-bitmap 100 100))
-    (define secondary-bmp (make-bitmap 100 100))
+    (define invalid-start #f)
+    (define invalid-end #f)
+    (define primary-bmp (make-bitmap 10 10))
+    (define secondary-bmp (make-bitmap 10 10))
     (super-new)
     
     ; situations to consider
@@ -34,37 +34,36 @@
       (cond 
         ; one line
         [(= ps pe)
-         (update-invalid-start (min ps invalid-start))
-         (update-invalid-end (max pe invalid-end))]
+         (union-invalid ps pe)]
         ; insert at end of bitmap, no space left (i.e. no line shifting)
         ; remove this section because this case doesn't test properly
         ; only two cases, the one above and the one below
         ; insert in the middle, line shifting
         [else
-         (define invalid-region-size (+ (- (last-paragraph) ps) 1))
-         ;(define b (make-bytes (* 4 100 (- (last-paragraph) invalid-region-size))))
-         ;(send primary-bmp get-argb-pixels 0 start 100 invalid-region-size b)         
+         (define invalid-region-size (- (last-paragraph) ps))        
          (cond 
-           [(>= (last-paragraph) (send primary-bmp get-height))            
-            (define bdc (new bitmap-dc% [bitmap secondary-bmp]))
+           [(>= (last-paragraph) (send primary-bmp get-height))     
             (define h (send primary-bmp get-height))
             (define w (send primary-bmp get-width))
-            (define temp (make-bitmap w (* 2 h)))
-            (set! secondary-bmp temp)
+            (define new-primary-bmp (make-bitmap w (* 2 h)))
+            (define new-secondary-bmp (make-bitmap w (* 2 h)))
+            (define bdc (new bitmap-dc% [bitmap new-primary-bmp]))
             (send bdc draw-bitmap-section 
-                  primary-bmp 0 0 0 0 w h)
-            (set! primary-bmp secondary-bmp)
-            (set! secondary-bmp (make-bitmap w (* 2 h)))]
+                  primary-bmp 0 0 0 0 w ps)
+            (send bdc draw-bitmap-section
+                  primary-bmp 0 pe 0 ps w (- h ps))            
+            (set! primary-bmp new-primary-bmp)
+            (set! secondary-bmp new-secondary-bmp)]
            [else 
             (define bdc (new bitmap-dc% [bitmap secondary-bmp]))
             (define h (send primary-bmp get-height))
             (define w (send primary-bmp get-width))
             (send bdc draw-bitmap-section
-                  primary-bmp 0 0 0 0 w h)
+                  primary-bmp 0 0 0 0 w ps)
             (send bdc draw-bitmap-section
-                  primary-bmp 0 (+ 1 pe) 0 ps 100 invalid-region-size)])
-         (update-invalid-start (inexact->exact (min ps invalid-start)))
-         (update-invalid-end (inexact->exact (max pe invalid-end)))])
+                  primary-bmp 0 pe 0 ps w invalid-region-size)
+            (swap-bitmaps)])
+         (union-invalid ps pe)])
       
       #|
       (printf "insert istart:~a iend:~a\n" invalid-start invalid-end)
@@ -90,18 +89,20 @@
       (define pe (position-paragraph (+ start len)))
       (cond
         [(equal? ps pe) 
-         (update-invalid-start (inexact->exact (min ps invalid-start)))
-         (update-invalid-end (inexact->exact (max pe invalid-end)))]
+         (union-invalid ps pe)]
         [else
          ; copy stuff up
-         (define invalid-region-size (+ 1 (- (last-paragraph) pe)))
-         (define bdc (new bitmap-dc% [bitmap primary-bmp]))
-         (send bdc draw-bitmap-section primary-bmp 0 ps 0 pe 100 invalid-region-size)
-         (send bdc set-pen "white" 1 'transparent)
-         (send bdc set-brush (make-object color% "white") 'transparent)
-         (send bdc draw-rectangle 0 (+ 1 pe) 100 invalid-region-size)
-         (update-invalid-start (inexact->exact (min ps invalid-start)))
-         (update-invalid-end (inexact->exact (max ps invalid-end)))])
+         (define invalid-region-size (- (last-paragraph) pe))
+         (define bdc (new bitmap-dc% [bitmap secondary-bmp]))
+         (define h (send secondary-bmp get-height))
+         (define w (send secondary-bmp get-width))
+         (send bdc draw-bitmap-section primary-bmp 0 0 0 0 w ps)
+         (send bdc draw-bitmap-section primary-bmp 0 ps 0 pe w invalid-region-size)
+         (send bdc set-pen "blue" 1 'transparent)
+         (send bdc set-brush "white" 'solid)
+         (send bdc draw-rectangle 0 (- (last-paragraph) 1) w (- h ps (- invalid-region-size pe)))
+         (swap-bitmaps)
+         (union-invalid ps ps)])
       
       #|
       (printf "delete istart:~a iend:~a\n" invalid-start invalid-end)
@@ -145,8 +146,18 @@
       (set! secondary-bmp temp))
     (define/private (update-invalid-start nstart)
       (set! invalid-start nstart))
-    (define/private (update-invalid-end nend)
-      (set! invalid-end nend))
+    (define/private (union-invalid start end)
+      (set! invalid-start 
+            (if invalid-start
+                (min start invalid-start)
+                start))
+      (set! invalid-end 
+            (if invalid-end
+                (max end invalid-end)
+                end)))
+    (define/private (clear-invalid)
+      (set! invalid-start #f)
+      (set! invalid-end #f))
     
     ; do-a-little-work : void
     ; three iterations of (update-bitmap)
@@ -166,16 +177,23 @@
            (cond 
              [(= invalid-start invalid-end)
               (update-one-line y bdc)
-              (update-invalid-start +inf.0)
-              (update-invalid-end -inf.0)]
+              (clear-invalid)]
              [else 
               (update-one-line y bdc)
               (update-invalid-start (+ 1 y))]))
          (send bdc set-bitmap #f)]))
     
+    ; one problem, if the paragraph is shorter after a delete
+    ; then there will be remnants from the previous paragraph 
+    ; after the last position in the paragraph
+    ; that don't get redrawn
     (define/private (update-one-line y bdc)
+      (send bdc set-pen "blue" 1 'transparent)
+      (send bdc set-brush "white" 'solid)
+      (define w (send secondary-bmp get-width))
+      (send bdc draw-rectangle 0 y w 1)
       (for ([i (in-range (paragraph-start-position y) 
-                         (+ 1 (paragraph-end-position y)))])
+                         (paragraph-end-position y))])
         (define x (- i (paragraph-start-position y)))
         (let ([ch (get-character i)])
           (cond 
@@ -184,24 +202,9 @@
             [else (send bdc set-pixel x y (make-object color% "black"))]))))
     
     (define/public (up-to-date?)
-      (and (= +inf.0 invalid-start) (= -inf.0 invalid-end)))
+      (and (not invalid-start) (not invalid-end)))
     ))
 
-(define (color->bytes colorobj numpixels)
-  (define r (send colorobj red))
-  (define g (send colorobj green))
-  (define b (send colorobj blue))
-  (define a (send colorobj alpha))
-  (define ret (make-bytes (* 4 numpixels)))
-  (for ([i (in-range 0 (* 4 numpixels) 4)]
-        [j (in-range 1 (* 4 numpixels) 4)]
-        [k (in-range 2 (* 4 numpixels) 4)]
-        [l (in-range 3 (* 4 numpixels) 4)])
-    (bytes-set! ret i (inexact->exact (* 255 a)))
-    (bytes-set! ret j r)
-    (bytes-set! ret k g)
-    (bytes-set! ret l b))
-  ret)
 
 ; test suite
 ; test case - function that takes a text and calls various methods, including insert
@@ -209,21 +212,35 @@
 ; create a text, call the function, do-a-little-work until up-to-date?, compare bitmaps
 ; test-txtbmp : (-> text void) bitmap -> bool
 ; random testing
-(define (test-txtbmp fn fn2list bmp)
+(require (for-syntax racket/base))
+(define-syntax (test-txtbmp stx)
+  (syntax-case stx ()
+    [(_ . args)
+     (with-syntax ([line (syntax-line stx)])
+       #'(test-txtbmp/proc line . args))]))
+
+(define (test-txtbmp/proc line fn2list ls)
   (define nt (new state%))
-  (fn nt)
-  (let loop ()
-    (send nt do-a-little-work)
-    (unless (send nt up-to-date?) (loop)))
   (for ([f fn2list])
     (f nt)
     (let loop()
       (send nt do-a-little-work)
       (unless (send nt up-to-date?) (loop))))
-  (print (send nt get-bitmap))
-  (print bmp)
-  (newline)
-  (compare-bitmap (send nt get-bitmap) bmp))
+  (define actual (bitmap->strings (send nt get-bitmap)))
+  (unless (equal? actual ls)
+    (eprintf "YOU FAILED test on line ~a\n ~s\n ~s\n" line actual ls)))
+
+(define (bitmap->strings bmp)
+  (define bdc (make-object bitmap-dc% bmp))
+  (define color (make-object color%))
+  (for/list ([i (in-range (send bmp get-height))])
+    (apply 
+     string
+    (for/list ([j (in-range (send bmp get-width))])
+      (send bdc get-pixel j i color)
+      (if (= 0 (send color red))
+          #\x
+          #\space)))))
 
 ; turn into bytes and use equal?
 ; empty bytes will be 4x width and height
@@ -268,12 +285,16 @@
 
 (define (insert-test4 txt)
   (for ([i (in-range 101)])
-    (send txt insert "a")
+    (send txt insert "aaaaaaaaaaaaaaaaaaaa")
     (send txt insert "\n")))
 
 (define (delete-test4 txt)
-  (send txt delete 10 20)
-  (send txt delete 40 50))
+  (send txt delete 10 40)
+  (send txt delete 50 75)
+  (send txt delete 100 136)
+  (send txt delete 308 367)
+  (send txt delete 320 336)
+  (send txt delete 400 578))
 
 (define (delete-test2 txt)
   (send txt insert "hellohellohello\n")
@@ -281,6 +302,97 @@
   (send txt insert "hellohellohello\n")
   (send txt delete 5 10))
 
+(define (mini1 txt)
+  (send txt insert "hello\n")
+  (send txt insert "hello\n"))
+(define (mini2 txt)
+  (send txt insert "hello\n")
+  (send txt insert "hi"))
+(define (mini3 txt)
+  (send txt delete 4 7))
+(define (mini4 txt)
+  (send txt insert "h        o"))
+(define (mini5 txt)
+  (send txt insert "1"))
+(define (mini5d txt)
+  (send txt delete 0 0))
+(define (mini6 txt)
+  (send txt insert "1"))
+(define (mini6d txt)
+  (send txt delete 0 1))
+(define (mini7 txt)
+  (send txt insert "hello\n")
+  (send txt insert "hello\n")
+  (send txt insert "hello\n")
+  (send txt insert "hello\n")
+  (send txt insert "hello\n")
+  (send txt insert "hello\n")
+  (send txt insert "hello\n")
+  (send txt insert "hello\n")
+  (send txt insert "hello\n")
+  (send txt insert "hello\n"))
+(define (mini8 txt)
+  (send txt insert "hi\n" 6))
+(define (mini9 txt)
+  (send txt insert " " 12))
+(define (mini10 txt)
+  (send txt delete 6 12))
+(define (mini11 txt)
+  (send txt insert "aaaaaa\n")
+  (send txt insert "      \n")
+  (send txt insert "aaaaaa\n"))
+(define (mini12 txt) 
+  (send txt delete 3 10))
+(define (mini13 txt)
+  (send txt delete 4 5))
+(define (mini14 txt)
+  (send txt insert "aaaa\n")
+  (send txt insert "    \n")
+  (send txt insert "aaaa\n"))
+(define (mini15 txt)
+  (send txt insert "\n"))
+
+(test-txtbmp (list mini1) '("xxxxx     "
+                            "xxxxx     "
+                            "          "
+                            "          "
+                            "          "
+                            "          "
+                            "          "
+                            "          "
+                            "          "
+                            "          "))
+(test-txtbmp (list mini2) '("xxxxx     "
+                            "xx        "
+                            "          "
+                            "          "
+                            "          "
+                            "          "
+                            "          "
+                            "          "
+                            "          "
+                            "          "))
+(test-txtbmp (list mini1 mini3) '("xxxxxxxx  "
+                                  "          "
+                                  "          "
+                                  "          "
+                                  "          "
+                                  "          "
+                                  "          "
+                                  "          "
+                                  "          "
+                                  "          "))
+(test-txtbmp (list mini4 mini3) (make-bitmap 10 10))
+(test-txtbmp (list mini5 mini5d) (make-bitmap 10 10))
+(test-txtbmp (list mini6 mini6d) (make-bitmap 10 10))
+(test-txtbmp (list mini7) (make-bitmap 10 10))
+(test-txtbmp (list mini7 mini8) (make-bitmap 10 10))
+(test-txtbmp (list mini7 mini9 mini8) (make-bitmap 10 10))
+(test-txtbmp (list mini7 mini10) (make-bitmap 10 10))
+(test-txtbmp (list mini11 mini12) (make-bitmap 10 10))
+(test-txtbmp (list mini14 mini13) (make-bitmap 10 10))
+(test-txtbmp (list mini14) (make-bitmap 10 10))
+(test-txtbmp (list mini15) (make-bitmap 10 10))
 ;(test-txtbmp insert-test3 (make-bitmap 100 100))
 ;(test-txtbmp insert-test (make-bitmap 100 100))
 ;(test-txtbmp insert-newlines (make-bitmap 100 100))
@@ -289,7 +401,8 @@
 ;(test-txtbmp delete-test1 (make-bitmap 100 100))
 ;(test-txtbmp insert-test4 (list delete-test4 insert-newlines) (make-bitmap 100 100))
 ;(test-txtbmp delete-test2 empty (make-bitmap 100 100))
-(test-txtbmp insert-test4 empty (make-bitmap 100 100))
+;(test-txtbmp insert-test4 empty (make-bitmap 100 100))
+;(test-txtbmp insert-test4 (list delete-test4) (make-bitmap 100 100))
 
 #| 
 (define f (new frame% [label ""] 

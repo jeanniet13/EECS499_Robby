@@ -194,7 +194,6 @@
             [(char-whitespace? ch) 
              (send bdc set-pixel x y (make-object color% "white"))]
             [else 
-             (printf "~a ~a\n" (get-character i) (color->rgb (get-color i)))
              (send bdc set-pixel x y (make-object color% (get-color i)))]))))
     
     (define/public (up-to-date?)
@@ -254,7 +253,7 @@
   (equal? b1 c1))
 
 ; passed
-#|
+
 (define (mini1 txt)
   (send txt insert "hello\n")
   (send txt insert "hello\n"))
@@ -486,7 +485,7 @@
                              "          " 
                              "          " 
                              "          "))
-|#
+
 
 (define (mini16 txt)
   (send txt insert ";hello"))
@@ -515,6 +514,11 @@
                              "          "
                              "          "))
 
+(define (test-changestyle t start end c)
+  (define sd (make-object style-delta%))
+  (send sd set-delta-foreground c)
+  (send t change-style sd start end))
+
 #|
 (define f (new frame% [label ""] 
                [width 200]
@@ -531,3 +535,12 @@
                   (send dc draw-bitmap (send t get-bitmap) 0 0))]))
 (send f show #t)
 |#
+
+;create a text
+;call load-file (collection-file-path "rep.rkt" "drracket" "private")
+;call (set-filename #f) which is a method of text
+;get the bitmap in sync (call do-a-little-work until it's done)
+;do some insertions and time the insert call
+;time the do-a-little-work calls (not the loop)
+;i.e. do an insertion, do-a-little-work and etc.
+;(time exp...)

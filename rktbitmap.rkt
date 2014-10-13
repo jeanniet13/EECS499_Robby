@@ -4,10 +4,13 @@
          racket/class
          racket/list
          racket/match
+         racket/file
          framework)
 
-(define state%
+(define state%  
   (class text%
+    (init-field [event-queue? #f])
+    (define is-do-a-little-work-enqueued?  #f)
     (define invalid-start #f)
     (define invalid-end #f)
     (define primary-bmp (make-bitmap 10 10))
@@ -64,7 +67,8 @@
             (send bdc draw-bitmap-section
                   primary-bmp 0 pe 0 ps w invalid-region-size)
             (swap-bitmaps)])
-         (union-invalid ps pe)]))    
+         (union-invalid ps pe)])
+      (maybe-queue-do-a-little-work?))    
     
     ; how to handle multiple non-consective regions?
     ; for delete - invalid region should only be one line? except when things are pending
@@ -96,7 +100,8 @@
          (send bdc set-brush "white" 'solid)
          (send bdc draw-rectangle 0 (- (last-paragraph) 1) w (- h ps (- invalid-region-size pe)))
          (swap-bitmaps)
-         (union-invalid ps ps)]))
+         (union-invalid ps ps)])
+      (maybe-queue-do-a-little-work?))
 
       ; if start and end are in the same line
       ; update invalid region to include line
@@ -148,6 +153,17 @@
       (set! invalid-start #f)
       (set! invalid-end #f))
     
+    (define/private (maybe-queue-do-a-little-work?)
+      (cond
+        [(up-to-date?) (void)]
+        [is-do-a-little-work-enqueued? (void)]
+        [(not event-queue?) (void)]
+        [else
+         (set! is-do-a-little-work-enqueued? #t)
+         (queue-callback 
+          (lambda () (do-a-little-work))
+          #f)]))
+         
     ; do-a-little-work : void
     ; three iterations of (update-bitmap)
     ; for now, iterate by lines
@@ -162,6 +178,10 @@
         [(up-to-date?) (void)]
         [else 
          (define bdc (new bitmap-dc% [bitmap primary-bmp]))
+         ; change this to loop for x time
+         ; current-inexact-milliseconds
+         ; guarantee at least one iteration
+         ; stops after >10ish milliseconds
          (let ([y invalid-start])
            (cond 
              [(= invalid-start invalid-end)
@@ -170,7 +190,8 @@
              [else 
               (update-one-line y bdc)
               (update-invalid-start (+ 1 y))]))
-         (send bdc set-bitmap #f)]))
+         (send bdc set-bitmap #f)
+         (maybe-queue-do-a-little-work?)]))
     
     (define/private (update-one-line y bdc)
       (define (get-color p)
@@ -198,332 +219,15 @@
     
     (define/public (up-to-date?)
       (and (not invalid-start) (not invalid-end)))
+
     ))
 
 
-; test suite
-; test case - function that takes a text and calls various methods, including insert
-;  second piece is the bitmap that's the correct answer for the results of the function
-; create a text, call the function, do-a-little-work until up-to-date?, compare bitmaps
-; test-txtbmp : (-> text void) bitmap -> bool
-; random testing
-(require (for-syntax racket/base))
-(define-syntax (test-txtbmp stx)
-  (syntax-case stx ()
-    [(_ . args)
-     (with-syntax ([line (syntax-line stx)])
-       #'(test-txtbmp/proc line . args))]))
-
-(define (test-txtbmp/proc line fn2list ls)
-  (define nt (new state%))
-  (for ([f fn2list])
-    (f nt)
-    (let loop()
-      (send nt do-a-little-work)
-      (unless (send nt up-to-date?) (loop))))
-  (print (send nt get-bitmap))
-  (newline)
-  (define actual (bitmap->strings (send nt get-bitmap)))
-  (unless (equal? actual ls)
-    (eprintf "YOU FAILED test on line ~a\n ~s\n ~s\n" line actual ls)))
-
-(define (bitmap->strings bmp)
-  (define bdc (make-object bitmap-dc% bmp))
-  (define color (make-object color%))
-  (for/list ([i (in-range (send bmp get-height))])
-    (apply 
-     string
-    (for/list ([j (in-range (send bmp get-width))])
-      (send bdc get-pixel j i color)
-      (if (and (= 255 (send color red))
-               (= 255 (send color green))
-               (= 255 (send color blue)))
-          #\space
-          #\x)))))
-      
-
-; turn into bytes and use equal?
-; empty bytes will be 4x width and height
-; set-argb-pixels
-(define (compare-bitmap bmp1 bmp2)
-  (define b1 (make-bytes 40000))
-  (define c1 (make-bytes 40000))
-  (send bmp1 get-argb-pixels 0 0 100 100 b1) 
-  (send bmp2 get-argb-pixels 0 0 100 100 c1)
-  (equal? b1 c1))
-
-; passed
-
-(define (mini1 txt)
-  (send txt insert "hello\n")
-  (send txt insert "hello\n"))
-(define (mini2 txt)
-  (send txt insert "hello\n")
-  (send txt insert "hi"))
-(define (mini3 txt)
-  (send txt delete 4 7))
-(define (mini4 txt)
-  (send txt insert "h        o"))
-(define (mini5 txt)
-  (send txt insert "1"))
-(define (mini5d txt)
-  (send txt delete 0 0))
-(define (mini6 txt)
-  (send txt insert "1"))
-(define (mini6d txt)
-  (send txt delete 0 1))
-(define (mini7 txt)
-  (send txt insert "hello\n")
-  (send txt insert "hello\n")
-  (send txt insert "hello\n")
-  (send txt insert "hello\n")
-  (send txt insert "hello\n")
-  (send txt insert "hello\n")
-  (send txt insert "hello\n")
-  (send txt insert "hello\n")
-  (send txt insert "hello\n")
-  (send txt insert "hello\n"))
-(define (mini8 txt)
-  (send txt insert "hi\n" 6))
-(define (mini9 txt)
-  (send txt insert " " 12))
-(define (mini10 txt)
-  (send txt delete 6 12))
-(define (mini11 txt)
-  (send txt insert "aaaaaa\n")
-  (send txt insert "      \n")
-  (send txt insert "aaaaaa\n"))
-(define (mini12 txt) 
-  (send txt delete 3 10))
-(define (mini13 txt)
-  (send txt delete 4 5))
-(define (mini14 txt)
-  (send txt insert "aaaa\n")
-  (send txt insert "    \n")
-  (send txt insert "aaaa\n"))
-(define (mini15 txt)
-  (send txt insert "\n"))
-
-
-(test-txtbmp (list mini1) '("xxxxx     "
-                            "xxxxx     "
-                            "          "
-                            "          "
-                            "          "
-                            "          "
-                            "          "
-                            "          "
-                            "          "
-                            "          "))
-(test-txtbmp (list mini2) '("xxxxx     "
-                            "xx        "
-                            "          "
-                            "          "
-                            "          "
-                            "          "
-                            "          "
-                            "          "
-                            "          "
-                            "          "))
-(test-txtbmp (list mini1 mini3) '("xxxxxxxx  "
-                                  "          "
-                                  "          "
-                                  "          "
-                                  "          "
-                                  "          "
-                                  "          "
-                                  "          "
-                                  "          "
-                                  "          "))
-(test-txtbmp (list mini4 mini3) `("x     x   "
-                                  "          "
-                                  "          "
-                                  "          "
-                                  "          "
-                                  "          "
-                                  "          "
-                                  "          "
-                                  "          "
-                                  "          "))
-(test-txtbmp (list mini5 mini5d) `("x         "
-                                   "          " 
-                                   "          " 
-                                   "          "
-                                   "          " 
-                                   "          " 
-                                   "          " 
-                                   "          " 
-                                   "          "
-                                   "          "))
-(test-txtbmp (list mini6 mini6d) `("          " 
-                                   "          "                                                 
-                                   "          " 
-                                   "          " 
-                                   "          " 
-                                   "          "
-                                   "          " 
-                                   "          " 
-                                   "          " 
-                                   "          "))
-(test-txtbmp (list mini7) `("xxxxx     " 
-                            "xxxxx     " 
-                            "xxxxx     " 
-                            "xxxxx     " 
-                            "xxxxx     " 
-                            "xxxxx     " 
-                            "xxxxx     " 
-                            "xxxxx     " 
-                            "xxxxx     " 
-                            "xxxxx     " 
-                            "          " 
-                            "          " 
-                            "          " 
-                            "          " 
-                            "          " 
-                            "          " 
-                            "          "
-                            "          " 
-                            "          " 
-                            "          "))
-(test-txtbmp (list mini7 mini8) `("xxxxx     "                                   
-                                  "xx        "
-                                  "xxxxx     " 
-                                  "xxxxx     " 
-                                  "xxxxx     " 
-                                  "xxxxx     " 
-                                  "xxxxx     " 
-                                  "xxxxx     " 
-                                  "xxxxx     " 
-                                  "xxxxx     " 
-                                  "xxxxx     "  
-                                  "          " 
-                                  "          " 
-                                  "          " 
-                                  "          " 
-                                  "          " 
-                                  "          "
-                                  "          " 
-                                  "          " 
-                                  "          "))
-(test-txtbmp (list mini7 mini9 mini8) `("xxxxx     "
-                                        "xx        "
-                                        "xxxxx     " 
-                                        " xxxxx    "
-                                        "xxxxx     "
-                                        "xxxxx     "
-                                        "xxxxx     "
-                                        "xxxxx     " 
-                                        "xxxxx     "
-                                        "xxxxx     "
-                                        "xxxxx     "
-                                        "          "
-                                        "          " 
-                                        "          " 
-                                        "          "
-                                        "          "
-                                        "          "
-                                        "          "
-                                        "          "
-                                        "          "))
-(test-txtbmp (list mini7 mini10) `("xxxxx     " 
-                                   "xxxxx     "
-                                   "xxxxx     "
-                                   "xxxxx     "
-                                   "xxxxx     " 
-                                   "xxxxx     "
-                                   "xxxxx     "
-                                   "xxxxx     "
-                                   "xxxxx     "
-                                   "          "
-                                   "          "
-                                   "          " 
-                                   "          " 
-                                   "          " 
-                                   "          " 
-                                   "          " 
-                                   "          "
-                                   "          " 
-                                   "          "
-                                   "          "))
-(test-txtbmp (list mini11 mini12) `("xxx       "
-                                    "xxxxxx    " 
-                                    "          " 
-                                    "          " 
-                                    "          " 
-                                    "          "
-                                    "          " 
-                                    "          " 
-                                    "          " 
-                                    "          "))
-(test-txtbmp (list mini14 mini13) `("xxxx      "
-                                    "xxxx      " 
-                                    "          "
-                                    "          "
-                                    "          "
-                                    "          " 
-                                    "          " 
-                                    "          "
-                                    "          " 
-                                    "          "))
-(test-txtbmp (list mini14) `("xxxx      "
-                             "          "
-                             "xxxx      "
-                             "          "
-                             "          "
-                             "          "
-                             "          "
-                             "          "
-                             "          "
-                             "          "))
-(test-txtbmp (list mini15) `("          "
-                             "          "
-                             "          "
-                             "          "
-                             "          "
-                             "          " 
-                             "          " 
-                             "          " 
-                             "          " 
-                             "          "))
-
-
-(define (mini16 txt)
-  (send txt insert ";hello"))
-(define (mini17 txt)
-  (send txt insert "\"hello\""))
-(define (mini18 txt)
-  (send txt insert "#|hello"))
-(test-txtbmp (list mini16) `("xxxxxx    "
-                             "          "
-                             "          "
-                             "          "
-                             "          "
-                             "          "
-                             "          "
-                             "          "
-                             "          "
-                             "          "))
-(test-txtbmp (list mini17) `("xxxxxxx   "
-                             "          "
-                             "          "
-                             "          "
-                             "          "
-                             "          "
-                             "          "
-                             "          "
-                             "          "
-                             "          "))
-
-(define (test-changestyle t start end c)
-  (define sd (make-object style-delta%))
-  (send sd set-delta-foreground c)
-  (send t change-style sd start end))
-
-#|
+(module+ main
 (define f (new frame% [label ""] 
                [width 200]
                [height 200]))
-(define t (new state%))
+(define t (new state% [event-queue? (lambda () (send c refresh))]))
 (define hp (new horizontal-panel% [parent f]))
 (define ec (new editor-canvas% 
                 [parent hp]
@@ -534,7 +238,25 @@
                 (λ (c dc)
                   (send dc draw-bitmap (send t get-bitmap) 0 0))]))
 (send f show #t)
-|#
+  )
+
+(define (r txt)
+  (send txt insert (file->string "C:/Program Files/Racket/collects/compiler/private/xform.rkt")))
+(define nt (new state %))
+(send nt insert (file->string "C:/Program Files/Racket/collects/compiler/private/xform.rkt"))
+(define counter 0)
+(let loop ()
+  (send nt do-a-little-work)
+  
+
+
+; benchmark time(do-a-little-work) on a large file
+; and (send t ) some edits
+; do-a-little-work may need to return a boolean indicating whether or not it needs to do more work
+; do-a-little-work should then not queue the callback itself
+; whoever calls do-a-little-work should queue the callback based on dalw return
+; dalw should always take 10ms
+; maybe plot numbers
 
 ;create a text
 ;call load-file (collection-file-path "rep.rkt" "drracket" "private")

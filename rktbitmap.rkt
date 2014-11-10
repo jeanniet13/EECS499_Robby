@@ -15,6 +15,7 @@
     (define invalid-end #f)
     (define primary-bmp (make-bitmap 30 2))
     (define secondary-bmp (make-bitmap 30 2))
+    (define bmp-width 0)
     (super-new)
     
     ; situations to consider
@@ -35,6 +36,10 @@
       ; if it's one line, update invalid region to include the line
       (define ps (position-paragraph start))
       (define pe (position-paragraph (+ start len)))
+      (for ([i (in-range ps pe)])
+           (let ((w (- (paragraph-end-position i) (paragraph-start-position i))))
+             (when (> w bmp-width)
+               (set! bmp-width w))))
       (cond 
         ; one line
         [(= ps pe)
@@ -44,7 +49,7 @@
         ; only two cases, the one above and the one below
         ; insert in the middle, line shifting
         [else
-         (define invalid-region-size (- (last-paragraph) ps))        
+         (define invalid-region-size (- (last-paragraph) ps))
          (cond 
            [(>= (last-paragraph) (send primary-bmp get-height)) 
             (define h (send primary-bmp get-height))
@@ -53,8 +58,8 @@
                   (+ 20 (last-paragraph))
                   (* 2 h)))
             (define w (send primary-bmp get-width))
-            (define new-primary-bmp (make-bitmap w new-h))
-            (define new-secondary-bmp (make-bitmap w new-h))
+            (define new-primary-bmp (make-bitmap bmp-width new-h))
+            (define new-secondary-bmp (make-bitmap bmp-width new-h))
             (define bdc (new bitmap-dc% [bitmap new-primary-bmp]))
             (send bdc draw-bitmap-section 
                   primary-bmp 0 0 0 0 w ps)
@@ -118,7 +123,11 @@
     ; how to get colors of words
     ; needs to do a little work
     (define/augment (after-change-style start len) 
-      (inner (void) after-change-style start len))
+      (inner (void) after-change-style start len)
+      (define ps (position-paragraph start))
+      (define pe (position-paragraph (+ start len)))
+      (union-invalid ps pe)
+      (maybe-queue-do-a-little-work?))
     
     (inherit paragraph-start-position
              paragraph-end-position
@@ -173,6 +182,7 @@
     
     (define/public (maybe-queue-do-a-little-work?)
       (define (loop looped)
+        ;(printf "~s\n" bmp-width)
         (cond
           [(and (up-to-date?) looped)
            (let ((c (get-canvas)))

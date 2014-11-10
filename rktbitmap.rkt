@@ -8,13 +8,13 @@
          framework)
 
 (define state%  
-  (class text%
+  (class racket:text%
     (init-field [event-queue? #f])
     (define is-do-a-little-work-enqueued?  #f)
     (define invalid-start #f)
     (define invalid-end #f)
-    (define primary-bmp (make-bitmap 10 10))
-    (define secondary-bmp (make-bitmap 10 10))
+    (define primary-bmp (make-bitmap 30 2))
+    (define secondary-bmp (make-bitmap 30 2))
     (super-new)
     
     ; situations to consider
@@ -46,11 +46,15 @@
         [else
          (define invalid-region-size (- (last-paragraph) ps))        
          (cond 
-           [(>= (last-paragraph) (send primary-bmp get-height))     
+           [(>= (last-paragraph) (send primary-bmp get-height)) 
             (define h (send primary-bmp get-height))
+            (define new-h 
+              (if (< (* 2 h) (last-paragraph))
+                  (+ 20 (last-paragraph))
+                  (* 2 h)))
             (define w (send primary-bmp get-width))
-            (define new-primary-bmp (make-bitmap w (* 2 h)))
-            (define new-secondary-bmp (make-bitmap w (* 2 h)))
+            (define new-primary-bmp (make-bitmap w new-h))
+            (define new-secondary-bmp (make-bitmap w new-h))
             (define bdc (new bitmap-dc% [bitmap new-primary-bmp]))
             (send bdc draw-bitmap-section 
                   primary-bmp 0 0 0 0 w ps)
@@ -96,8 +100,10 @@
          (define w (send secondary-bmp get-width))
          (send bdc draw-bitmap-section primary-bmp 0 0 0 0 w ps)
          (send bdc draw-bitmap-section primary-bmp 0 ps 0 pe w invalid-region-size)
+         ;(print (get-bitmap))
          (send bdc set-pen "blue" 1 'transparent)
          (send bdc set-brush "white" 'solid)
+         (printf "~a ~a ~a ~a" h ps invalid-region-size pe) 
          (send bdc draw-rectangle 0 (- (last-paragraph) 1) w (- h ps (- invalid-region-size pe)))
          (swap-bitmaps)
          (union-invalid ps ps)])
@@ -110,6 +116,7 @@
       ; and update invalid region
     
     ; how to get colors of words
+    ; needs to do a little work
     (define/augment (after-change-style start len) 
       (inner (void) after-change-style start len))
     
@@ -121,7 +128,9 @@
              insert
              delete
              get-text
-             find-snip)
+             find-snip
+             get-canvas)
+   
     
     (define/private (update-bitmap)
       (define bdc (new bitmap-dc% [bitmap primary-bmp]))
@@ -133,13 +142,22 @@
       (send bdc set-bitmap #f))
     
     (define/public (get-bitmap)
-      primary-bmp)       
+      primary-bmp)  
+    
+    (define/public (get-event-q)
+      event-queue?)
+    
+    (define/public (get-idalwe)
+      is-do-a-little-work-enqueued?)
+    
     (define/private (swap-bitmaps)
-      (define temp primary-bmp)
+      (define temp primary-bmp)      
       (set! primary-bmp secondary-bmp)
       (set! secondary-bmp temp))
+    
     (define/private (update-invalid-start nstart)
       (set! invalid-start nstart))
+    
     (define/private (union-invalid start end)
       (set! invalid-start 
             (if invalid-start
@@ -153,16 +171,28 @@
       (set! invalid-start #f)
       (set! invalid-end #f))
     
-    (define/private (maybe-queue-do-a-little-work?)
-      (cond
-        [(up-to-date?) (void)]
-        [is-do-a-little-work-enqueued? (void)]
-        [(not event-queue?) (void)]
-        [else
-         (set! is-do-a-little-work-enqueued? #t)
-         (queue-callback 
-          (lambda () (do-a-little-work))
-          #f)]))
+    (define/public (maybe-queue-do-a-little-work?)
+      (define (loop looped)
+        (cond
+          [(and (up-to-date?) looped)
+           (let ((c (get-canvas)))
+             (when c (send c refresh)))
+           (printf "~s ~s\n" (send (get-bitmap) get-width) (send (get-bitmap) get-height))]
+          [(and (up-to-date?) (not looped)) 
+           (void)]
+          [is-do-a-little-work-enqueued? 
+           (void)]
+          [(not event-queue?) 
+           (void)]
+          [else
+           (set! is-do-a-little-work-enqueued? #t)
+           (queue-callback 
+            (lambda () 
+              (do-a-little-work)
+              (set! is-do-a-little-work-enqueued? #f)
+              (loop #t))
+            #f)]))
+      (loop #f))
          
     ; do-a-little-work : void
     ; three iterations of (update-bitmap)
@@ -172,26 +202,30 @@
     
     ; check timer (later)
     ; data structure for invalid region?
-    ; assume that bitmap has the right size
+    ; assume that bitmap has the right size 
+    
     (define/public (do-a-little-work)
       (cond 
         [(up-to-date?) (void)]
         [else 
-         (define bdc (new bitmap-dc% [bitmap primary-bmp]))
+         (define start-time (current-inexact-milliseconds))
+         (define bdc (new bitmap-dc% [bitmap primary-bmp]))         
          ; change this to loop for x time
          ; current-inexact-milliseconds
          ; guarantee at least one iteration
          ; stops after >10ish milliseconds
-         (let ([y invalid-start])
-           (cond 
-             [(= invalid-start invalid-end)
-              (update-one-line y bdc)
-              (clear-invalid)]
-             [else 
-              (update-one-line y bdc)
-              (update-invalid-start (+ 1 y))]))
+         (let loop () 
+           (let ([y invalid-start])
+             (cond 
+               [(= invalid-start invalid-end)
+                (update-one-line y bdc)
+                (clear-invalid)]
+               [else 
+                (update-one-line y bdc)
+                (update-invalid-start (+ 1 y))
+                (unless (< (+ start-time 10) (current-inexact-milliseconds)) (loop))])))
          (send bdc set-bitmap #f)
-         (maybe-queue-do-a-little-work?)]))
+         start-time]))
     
     (define/private (update-one-line y bdc)
       (define (get-color p)
@@ -219,35 +253,44 @@
     
     (define/public (up-to-date?)
       (and (not invalid-start) (not invalid-end)))
-
+    (define/public (get-invalid-start)
+      invalid-start)
+    (define/public (get-invalid-end)
+      invalid-end)
     ))
 
 
 (module+ main
 (define f (new frame% [label ""] 
-               [width 200]
-               [height 200]))
+               [width 500]
+               [height 700]))
 (define t (new state% [event-queue? (lambda () (send c refresh))]))
+(send t insert (file->string "C:/Program Files/Racket/share/pkgs/drracket/drracket/private/unit.rkt"))
 (define hp (new horizontal-panel% [parent f]))
 (define ec (new editor-canvas% 
                 [parent hp]
                 [editor t]))
 (define c (new canvas%
                [parent hp]
+               [style (list 'vscroll)]
                [paint-callback
                 (λ (c dc)
                   (send dc draw-bitmap (send t get-bitmap) 0 0))]))
-(send f show #t)
+  (define b (new button% 
+                 [label "do-a-little-work"]
+                 [parent f]
+                 [callback (lambda (b m) 
+                             (send t do-a-little-work)
+                             (send c refresh))]))
+  (define d (new button%
+                 (label "maybe-queue?")
+                 [parent f]
+                 [callback (lambda (d n)
+                             (send t maybe-queue-do-a-little-work?))]))
+  (send f show #t)
+(send c init-auto-scrollbars #f 100 0.0 0.0)
+(send c show-scrollbars #f #t)
   )
-
-(define (r txt)
-  (send txt insert (file->string "C:/Program Files/Racket/collects/compiler/private/xform.rkt")))
-(define nt (new state %))
-(send nt insert (file->string "C:/Program Files/Racket/collects/compiler/private/xform.rkt"))
-(define counter 0)
-(let loop ()
-  (send nt do-a-little-work)
-  
 
 
 ; benchmark time(do-a-little-work) on a large file
@@ -266,3 +309,9 @@
 ;time the do-a-little-work calls (not the loop)
 ;i.e. do an insertion, do-a-little-work and etc.
 ;(time exp...)
+
+; delete, 
+; insert (refreshing)
+; color
+; on-paint of text%
+; width of widest line when generating bitmaps
